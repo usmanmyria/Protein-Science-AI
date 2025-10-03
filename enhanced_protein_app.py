@@ -132,13 +132,17 @@ def main():
         st.markdown("### 📊 System Status")
         
         # Test ESM-2 availability
-        system_ready = True
-        esm_status = check_esm2_availability()
-        
-        if esm_status["available"]:
-            st.success("✅ ESM-2 Model Ready")
-        else:
-            st.error(f"❌ ESM-2 Error: {esm_status['error']}")
+        try:
+            esm_status = check_esm2_availability()
+            
+            if esm_status["available"]:
+                st.success("✅ ESM-2 Model Ready")
+                system_ready = True
+            else:
+                st.warning(f"⚠️ ESM-2 Issue: {esm_status['error']}")
+                system_ready = False
+        except Exception as e:
+            st.warning(f"⚠️ System Check Failed: {str(e)}")
             system_ready = False
         
         if BIOPYTHON_AVAILABLE:
@@ -146,14 +150,23 @@ def main():
         else:
             st.warning("⚠️ BioPython Not Available")
 
+    # Show warnings if system not ready, but continue
     if not system_ready:
-        st.error("System not ready. Please check installation.")
+        st.warning("⚠️ ESM-2 model not available. Some features may be limited.")
         st.markdown("### 🔧 Troubleshooting:")
         st.markdown("1. Ensure all dependencies are installed:")
         st.code("pip install torch transformers fair-esm biopython", language="bash")
         st.markdown("2. Check internet connection for model download")
         st.markdown("3. Verify sufficient memory (>4GB recommended)")
-        return
+        st.markdown("---")
+
+    # Main content area - always show
+    if analysis_type == "Protein Analysis":
+        show_enhanced_analysis()
+    elif analysis_type == "ESM-2 Embeddings":
+        show_esm2_analysis()
+    elif analysis_type == "Protein Comparison":
+        show_enhanced_comparison()
 
 def check_esm2_availability():
     """Check if ESM-2 model can be loaded"""
@@ -180,18 +193,6 @@ def check_esm2_availability():
             "error": str(e),
             "model_name": None
         }
-
-    if not system_ready:
-        st.error("System not ready. Please check installation.")
-        return
-
-    # Main content area
-    if analysis_type == "Protein Analysis":
-        show_enhanced_analysis()
-    elif analysis_type == "ESM-2 Embeddings":
-        show_esm2_analysis()
-    elif analysis_type == "Protein Comparison":
-        show_enhanced_comparison()
 
 def get_peptide_compositions(sequence, k=3):
     """Get k-peptide composition (tripeptide, tetrapeptide, etc.)"""
