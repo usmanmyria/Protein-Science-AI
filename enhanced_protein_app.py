@@ -32,8 +32,80 @@ try:
 except ImportError:
     BIOPYTHON_AVAILABLE = False
 
+# ESM-2 model imports
+try:
+    import torch
+    from transformers import EsmModel, EsmTokenizer
+    ESM_AVAILABLE = True
+except ImportError:
+    ESM_AVAILABLE = False
+
 # Add the project directory to Python path
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+# Global model cache
+@st.cache_resource
+def load_esm2_model():
+    """Load ESM-2 model with caching"""
+    if not ESM_AVAILABLE:
+        raise ImportError("PyTorch and transformers not available")
+    
+    try:
+        model_name = "facebook/esm2_t33_650M_UR50D"
+        tokenizer = EsmTokenizer.from_pretrained(model_name)
+        model = EsmModel.from_pretrained(model_name)
+        model.eval()
+        
+        return {
+            "model": model,
+            "tokenizer": tokenizer,
+            "model_name": model_name
+        }
+    except Exception as e:
+        # Fallback to smaller model
+        try:
+            model_name = "facebook/esm2_t12_35M_UR50D"
+            tokenizer = EsmTokenizer.from_pretrained(model_name)
+            model = EsmModel.from_pretrained(model_name)
+            model.eval()
+            
+            return {
+                "model": model,
+                "tokenizer": tokenizer,
+                "model_name": model_name
+            }
+        except Exception as e2:
+            raise Exception(f"Failed to load ESM-2 models: {str(e)}, {str(e2)}")
+
+def generate_esm2_embeddings(sequence):
+    """Generate ESM-2 embeddings directly"""
+    try:
+        esm_data = load_esm2_model()
+        model = esm_data["model"]
+        tokenizer = esm_data["tokenizer"]
+        
+        # Tokenize sequence
+        tokens = tokenizer(sequence, return_tensors="pt", padding=True, truncation=True)
+        
+        # Generate embeddings
+        with torch.no_grad():
+            outputs = model(**tokens)
+            last_hidden_states = outputs.last_hidden_state
+        
+        # Extract sequence and residue embeddings
+        sequence_embedding = last_hidden_states.mean(dim=1).squeeze().numpy()
+        residue_embeddings = last_hidden_states.squeeze()[1:-1].numpy()  # Remove start/end tokens
+        
+        return {
+            "embeddings": sequence_embedding,
+            "residue_embeddings": residue_embeddings,
+            "sequence": sequence,
+            "model_name": esm_data["model_name"]
+        }
+        
+    except Exception as e:
+        st.error(f"Error generating embeddings: {e}")
+        return None
 
 st.set_page_config(
     page_title="Protein Science AI App",
@@ -59,20 +131,55 @@ def main():
         
         st.markdown("### 📊 System Status")
         
-        # Test imports and show status
-        try:
-            from protein_science.foundation.protein_models import ProteinLanguageModel
+        # Test ESM-2 availability
+        system_ready = True
+        esm_status = check_esm2_availability()
+        
+        if esm_status["available"]:
             st.success("✅ ESM-2 Model Ready")
-            system_ready = True
-            
-        except Exception as e:
-            st.error(f"❌ System Error: {e}")
+        else:
+            st.error(f"❌ ESM-2 Error: {esm_status['error']}")
             system_ready = False
         
         if BIOPYTHON_AVAILABLE:
             st.success("✅ BioPython Ready")
         else:
             st.warning("⚠️ BioPython Not Available")
+
+    if not system_ready:
+        st.error("System not ready. Please check installation.")
+        st.markdown("### 🔧 Troubleshooting:")
+        st.markdown("1. Ensure all dependencies are installed:")
+        st.code("pip install torch transformers fair-esm biopython", language="bash")
+        st.markdown("2. Check internet connection for model download")
+        st.markdown("3. Verify sufficient memory (>4GB recommended)")
+        return
+
+def check_esm2_availability():
+    """Check if ESM-2 model can be loaded"""
+    if not ESM_AVAILABLE:
+        return {
+            "available": False,
+            "error": "PyTorch or transformers not installed",
+            "model_name": None
+        }
+    
+    try:
+        # Try to load the model (this will use cache if already loaded)
+        esm_data = load_esm2_model()
+        
+        return {
+            "available": True,
+            "error": None,
+            "model_name": esm_data["model_name"]
+        }
+        
+    except Exception as e:
+        return {
+            "available": False,
+            "error": str(e),
+            "model_name": None
+        }
 
     if not system_ready:
         st.error("System not ready. Please check installation.")
@@ -274,19 +381,15 @@ def show_enhanced_comparison():
 def run_esm2_enhanced_analysis(sequence):
     """Run enhanced ESM-2 analysis with all features"""
     try:
-        from protein_science.foundation.protein_models import ProteinLanguageModel
-        
-        # Initialize ESM-2 model
+        # Generate ESM-2 embeddings directly
         st.info("🤖 Loading ESM-2 model...")
-        plm = ProteinLanguageModel(model_name="facebook/esm2_t33_650M_UR50D")
         
         st.info("🧠 Generating embeddings...")
-        # Run comprehensive analysis
-        analysis = plm.analyze_sequence(sequence)
+        embedding_results = generate_esm2_embeddings(sequence)
         
-        # Get different types of embeddings
-        seq_embeddings = plm.get_sequence_embeddings([sequence])
-        residue_embeddings = plm.get_residue_embeddings([sequence])
+        if embedding_results is None:
+            st.error("Failed to generate ESM-2 embeddings")
+            return None
         
         st.info("🔬 Computing enhanced features...")
         # Get enhanced analysis
@@ -296,10 +399,9 @@ def run_esm2_enhanced_analysis(sequence):
         results = {
             'sequence': sequence,
             'length': len(sequence),
-            'sequence_embedding': seq_embeddings[0],  # 1D array
-            'residue_embeddings': residue_embeddings[0],  # 2D array
-            'full_analysis': analysis,
-            'embeddings': seq_embeddings[0],  # Main embeddings for display
+            'embeddings': embedding_results['embeddings'],  # Main embeddings for display
+            'residue_embeddings': embedding_results['residue_embeddings'],  # 2D array
+            'model_name': embedding_results['model_name'],
             'timestamp': datetime.now().isoformat()
         }
         
@@ -318,10 +420,7 @@ def run_esm2_enhanced_analysis(sequence):
 def compare_proteins_enhanced(sequences):
     """Compare proteins with enhanced features"""
     try:
-        from protein_science.foundation.protein_models import ProteinLanguageModel
-        
         st.info("🤖 Loading ESM-2 model for enhanced comparison...")
-        plm = ProteinLanguageModel(model_name="facebook/esm2_t33_650M_UR50D")
         
         results = {}
         
@@ -330,23 +429,35 @@ def compare_proteins_enhanced(sequences):
         all_names = list(sequences.keys())
         
         st.info("🧠 Computing embeddings for all proteins...")
-        seq_embeddings = plm.get_sequence_embeddings(all_sequences)
         
-        # Store results with enhanced analysis
+        # Generate embeddings for each sequence
+        all_embeddings = []
         for i, (name, sequence) in enumerate(sequences.items()):
+            st.info(f"Processing {name} ({i+1}/{len(sequences)})...")
+            
+            embedding_results = generate_esm2_embeddings(sequence)
+            if embedding_results is None:
+                st.error(f"Failed to generate embeddings for {name}")
+                continue
+                
             enhanced = analyze_enhanced(sequence)
             results[name] = {
                 **enhanced,
-                'embedding': seq_embeddings[i],
-                'embedding_dim': len(seq_embeddings[i])
+                'embeddings': embedding_results['embeddings'],
+                'residue_embeddings': embedding_results['residue_embeddings'],
+                'embedding_dim': len(embedding_results['embeddings'])
             }
+            all_embeddings.append(embedding_results['embeddings'])
         
-        # Compute similarities
+        # Compute similarities using cosine similarity
         similarities = {}
+        embeddings_array = np.array(all_embeddings)
+        
         for i, name1 in enumerate(all_names):
             for j, name2 in enumerate(all_names):
-                if i < j:  # Only compute upper triangle
-                    similarity = plm.compute_similarity(sequences[name1], sequences[name2])
+                if i < j and i < len(embeddings_array) and j < len(embeddings_array):  # Only compute upper triangle
+                    # Use cosine similarity
+                    similarity = cosine_similarity([embeddings_array[i]], [embeddings_array[j]])[0][0]
                     similarities[f"{name1} vs {name2}"] = similarity
         
         results['similarities'] = similarities
